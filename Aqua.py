@@ -311,7 +311,7 @@ class Player:
         x = int(self.x - camx)
         y = int(self.y - camy + self.bob + self.feet_offset)
 
-        # Use dash sprite for moving OR dashing
+        # Use dash sprite for swimming OR dashing
         use_dash_sprite = self.is_dashing or self.is_moving
 
         if use_dash_sprite:
