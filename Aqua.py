@@ -80,7 +80,6 @@ class Player:
         # Collision box size
         self.w = 64
         self.h = 64
-        self.rect = pygame.Rect(int(self.x), int(self.y), self.w, self.h)
 
         # Movement
         self.speed_x = 6.0
@@ -188,7 +187,6 @@ class Player:
 
         self.x = float(new_x)
         self.y = float(new_y)
-        self.rect.topleft = (int(self.x), int(self.y))
 
     def move(self, keys, solids):
         # Dash cooldown
