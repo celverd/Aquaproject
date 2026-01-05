@@ -116,6 +116,8 @@ class Player:
         # Facing + "moving" state
         self.facing = 1
         self.is_moving = False
+        self.turn_boost_timer = 0.0
+        self.prev_input_dir = 0
 
         # Visual: feet + breathing (visual-only, pixel-snapped)
         self.feet_offset = 6  # tweak 4..10 until feet touch
@@ -190,10 +192,19 @@ class Player:
         self.y = float(new_y)
         self.rect.topleft = (int(self.x), int(self.y))
 
-    def move(self, keys, solids):
+    def move(self, keys, solids, dt):
         # Dash cooldown
         if self.dash_cd > 0:
             self.dash_cd -= 1
+
+        input_dir = 0
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            input_dir -= 1
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            input_dir += 1
+
+        if input_dir != 0 and self.prev_input_dir != 0 and input_dir != self.prev_input_dir:
+            self.turn_boost_timer = 0.08
 
         # If stuck, SHIFT to drop OR SPACE to dash breaks stick
         if self.is_stuck and (keys[self.release_key] or keys[pygame.K_SPACE]):
@@ -211,12 +222,17 @@ class Player:
 
         # Horizontal input (disabled while stuck or dashing)
         dx = 0.0
+        move_speed_x = self.speed_x
+        if self.turn_boost_timer > 0.0:
+            move_speed_x *= 1.2
+            self.turn_boost_timer = max(0.0, self.turn_boost_timer - dt)
+
         if not self.is_stuck and not self.is_dashing:
             if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-                dx -= self.speed_x
+                dx -= move_speed_x
                 self.facing = -1
             if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-                dx += self.speed_x
+                dx += move_speed_x
                 self.facing = 1
 
         # Underwater vertical control (disabled while dashing; overridden while stuck)
@@ -307,6 +323,8 @@ class Player:
             self.bob_t = 0.0
             self.bob = 0
 
+        self.prev_input_dir = input_dir
+
     def draw(self, screen, camx, camy):
         x = int(self.x - camx)
         y = int(self.y - camy + self.bob + self.feet_offset)
@@ -353,7 +371,7 @@ def game_loop():
     debug_font = pygame.font.Font(None, 20)
 
     while True:
-        clock.tick(FPS)
+        dt = clock.tick(FPS) / 1000.0
 
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
@@ -363,7 +381,7 @@ def game_loop():
                 player.debug_mode = not player.debug_mode
 
         keys = pygame.key.get_pressed()
-        player.move(keys, solids)
+        player.move(keys, solids, dt)
 
         camx = int(round(player.x - WIDTH // 2))
         camy = int(round(player.y - HEIGHT // 2))
