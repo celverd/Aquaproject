@@ -83,13 +83,14 @@ class Player:
         self.rect = pygame.Rect(int(self.x), int(self.y), self.w, self.h)
 
         # Movement
-        self.speed_x = 6.0
+        self.speed_x = 6.0 * FPS
+        self.vx = 0.0
 
         # Underwater "gravity" (sink)
-        self.sink_accel = 0.20
-        self.max_fall = 3.0
-        self.swim_up = 2.6
-        self.swim_down = 2.6
+        self.sink_accel = 0.20 * FPS
+        self.max_fall = 3.0 * FPS
+        self.swim_up = 2.6 * FPS
+        self.swim_down = 2.6 * FPS
         self.vy = 0.0
 
         # Contacts
@@ -100,18 +101,18 @@ class Player:
         # Auto wall stick
         self.is_stuck = False
         self.stick_side = 0          # -1 left, +1 right
-        self.stick_slide = 0.6       # how fast you slide down while stuck
+        self.stick_slide = 0.6 * FPS       # how fast you slide down while stuck
         self.release_key = pygame.K_LSHIFT
 
         # Dash
         self.is_dashing = False
-        self.dash_speed = 25.0
-        self.dash_time = 12
+        self.dash_speed = 25.0 * FPS
+        self.dash_time = 12 / FPS
         self.dash_timer = 0
         self.dash_dx = 0.0
         self.dash_dy = 0.0
         self.dash_cd = 0
-        self.dash_cd_max = 18
+        self.dash_cd_max = 18 / FPS
 
         # Facing + "moving" state
         self.facing = 1
@@ -190,10 +191,10 @@ class Player:
         self.y = float(new_y)
         self.rect.topleft = (int(self.x), int(self.y))
 
-    def move(self, keys, solids):
+    def move(self, keys, solids, dt):
         # Dash cooldown
         if self.dash_cd > 0:
-            self.dash_cd -= 1
+            self.dash_cd = max(0.0, self.dash_cd - dt)
 
         # If stuck, SHIFT to drop OR SPACE to dash breaks stick
         if self.is_stuck and (keys[self.release_key] or keys[pygame.K_SPACE]):
@@ -229,7 +230,7 @@ class Player:
                 self.vy = self.swim_down
             else:
                 if not self.on_ground:
-                    self.vy += self.sink_accel
+                    self.vy += self.sink_accel * dt
                     if self.vy > self.max_fall:
                         self.vy = self.max_fall
                 else:
@@ -278,16 +279,16 @@ class Player:
 
         # Apply movement values
         if self.is_dashing:
-            move_x = self.dash_dx
-            move_y = self.dash_dy
-            self.dash_timer -= 1
+            move_x = self.dash_dx * dt
+            move_y = self.dash_dy * dt
+            self.dash_timer -= dt
             if self.dash_timer <= 0:
                 self.is_dashing = False
                 self.dash_dx = 0.0
                 self.dash_dy = 0.0
         else:
-            move_x = dx
-            move_y = self.vy
+            move_x = (dx + self.vx) * dt
+            move_y = self.vy * dt
 
         # Collide (this prevents phasing through walls)
         self._resolve_axis(solids, move_x, move_y)
@@ -327,7 +328,7 @@ class Player:
         if not self.debug_mode:
             return
         lines = [
-            f"pos=({self.x:.1f},{self.y:.1f}) vy={self.vy:.2f}",
+            f"pos=({self.x:.1f},{self.y:.1f}) vx={self.vx:.2f} vy={self.vy:.2f}",
             f"ground={self.on_ground} stuck={self.is_stuck} side={self.stick_side}",
             f"wall L={self.wall_left} R={self.wall_right}",
             f"dashing={self.is_dashing} cd={self.dash_cd}",
@@ -351,9 +352,10 @@ def game_loop():
 
     player = Player(*spawn)
     debug_font = pygame.font.Font(None, 20)
+    recoil = 60.0
 
     while True:
-        clock.tick(FPS)
+        dt = clock.tick(FPS) / 1000.0
 
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
@@ -363,7 +365,11 @@ def game_loop():
                 player.debug_mode = not player.debug_mode
 
         keys = pygame.key.get_pressed()
-        player.move(keys, solids)
+        if keys[pygame.K_1]:
+            player.vx = -recoil * player.facing
+        else:
+            player.vx = 0.0
+        player.move(keys, solids, dt)
 
         camx = int(round(player.x - WIDTH // 2))
         camy = int(round(player.y - HEIGHT // 2))
