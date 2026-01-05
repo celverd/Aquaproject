@@ -116,6 +116,7 @@ class Player:
         # Facing + "moving" state
         self.facing = 1
         self.is_moving = False
+        self.fire_timer = 0
 
         # Visual: feet + breathing (visual-only, pixel-snapped)
         self.feet_offset = 6  # tweak 4..10 until feet touch
@@ -128,14 +129,19 @@ class Player:
         try:
             idle_path = os.path.join(assets_dir, "scuba.png")
             dash_path = os.path.join(assets_dir, "Dash.png")
+            bubblegun_path = os.path.join(assets_dir, "bubblegunmain.png")
             raw_idle = pygame.image.load(idle_path).convert_alpha()
             raw_dash = pygame.image.load(dash_path).convert_alpha()
+            raw_bubblegun = pygame.image.load(bubblegun_path).convert_alpha()
 
             self.img_idle_r = pygame.transform.scale(raw_idle, (64, 64))
             self.img_idle_l = pygame.transform.flip(self.img_idle_r, True, False)
 
             self.img_dash_r = pygame.transform.scale(raw_dash, (96, 96))
             self.img_dash_l = pygame.transform.flip(self.img_dash_r, True, False)
+
+            self.img_bubblegun_r = pygame.transform.scale(raw_bubblegun, (64, 64))
+            self.img_bubblegun_l = pygame.transform.flip(self.img_bubblegun_r, True, False)
         except Exception as e:
             print("Sprite load error:", e)
             self.img_idle_r = pygame.Surface((64, 64), pygame.SRCALPHA)
@@ -143,6 +149,8 @@ class Player:
             self.img_idle_l = self.img_idle_r.copy()
             self.img_dash_r = pygame.transform.scale(self.img_idle_r, (96, 96))
             self.img_dash_l = pygame.transform.flip(self.img_dash_r, True, False)
+            self.img_bubblegun_r = self.img_idle_r.copy()
+            self.img_bubblegun_l = self.img_idle_l.copy()
 
         # Debug
         self.debug_mode = False
@@ -191,6 +199,9 @@ class Player:
         self.rect.topleft = (int(self.x), int(self.y))
 
     def move(self, keys, solids):
+        if self.fire_timer > 0:
+            self.fire_timer -= 1
+
         # Dash cooldown
         if self.dash_cd > 0:
             self.dash_cd -= 1
@@ -311,6 +322,11 @@ class Player:
         x = int(self.x - camx)
         y = int(self.y - camy + self.bob + self.feet_offset)
 
+        if self.fire_timer > 0 and not self.is_dashing:
+            img = self.img_bubblegun_r if self.facing == 1 else self.img_bubblegun_l
+            screen.blit(img, (x, y))
+            return
+
         # Use dash sprite for moving OR dashing
         use_dash_sprite = self.is_dashing or self.is_moving
 
@@ -322,6 +338,12 @@ class Player:
         else:
             img = self.img_idle_r if self.facing == 1 else self.img_idle_l
             screen.blit(img, (x, y))
+
+    def fire(self):
+        self.fire_timer = 10
+        muzzle_x = self.x + (self.w * 0.5) + (self.facing * (self.w * 0.5 + 8))
+        muzzle_y = self.y + (self.h * 0.45)
+        return muzzle_x, muzzle_y, self.facing
 
     def draw_debug(self, screen, font):
         if not self.debug_mode:
@@ -343,14 +365,46 @@ class Player:
 # =========================
 # GAME LOOP
 # =========================
+class Bubble:
+    def __init__(self, x, y, vx, vy, surf):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = float(vx)
+        self.vy = float(vy)
+        self.surf = surf
+        self.rect = self.surf.get_rect(center=(int(self.x), int(self.y)))
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.rect.center = (int(self.x), int(self.y))
+
+    def draw(self, screen, camx, camy):
+        screen.blit(self.surf, (self.rect.x - camx, self.rect.y - camy))
+
+    def is_offscreen(self, world_w, world_h, padding=120):
+        return (
+            self.x < -padding
+            or self.y < -padding
+            or self.x > world_w + padding
+            or self.y > world_h + padding
+        )
+
+
 def game_loop():
     clock = pygame.time.Clock()
     level_map = load_level("levels/lvl1.txt")
     solids = build_solid_tiles(level_map)
     spawn = find_spawn(level_map)
+    world_w = len(level_map[0]) * TILE_SIZE
+    world_h = len(level_map) * TILE_SIZE
 
     player = Player(*spawn)
     debug_font = pygame.font.Font(None, 20)
+    bubbles = []
+    bubble_speed = 12.0
+    bubble_surface = pygame.Surface((16, 16), pygame.SRCALPHA)
+    pygame.draw.circle(bubble_surface, (0, 255, 255, 180), (8, 8), 7, 2)
 
     while True:
         clock.tick(FPS)
@@ -361,15 +415,27 @@ def game_loop():
                 sys.exit()
             if e.type == pygame.KEYDOWN and e.key == pygame.K_F1:
                 player.debug_mode = not player.debug_mode
+            if e.type == pygame.KEYDOWN and e.key == pygame.K_f:
+                spawn_x, spawn_y, facing = player.fire()
+                bubbles.append(
+                    Bubble(spawn_x, spawn_y, bubble_speed * facing, 0.0, bubble_surface)
+                )
 
         keys = pygame.key.get_pressed()
         player.move(keys, solids)
+
+        for bubble in bubbles[:]:
+            bubble.update()
+            if bubble.is_offscreen(world_w, world_h):
+                bubbles.remove(bubble)
 
         camx = int(round(player.x - WIDTH // 2))
         camy = int(round(player.y - HEIGHT // 2))
 
         WIN.fill(DARK_BLUE)
         draw_level(WIN, level_map, camx, camy)
+        for bubble in bubbles:
+            bubble.draw(WIN, camx, camy)
         player.draw(WIN, camx, camy)
         player.draw_debug(WIN, debug_font)
 
