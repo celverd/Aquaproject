@@ -349,9 +349,12 @@ def game_loop():
 
     player = Player(*spawn)
     debug_font = pygame.font.Font(None, 20)
+    particles = []
+    buoyancy = 0.6
+    drag = 1.2
 
     while True:
-        clock.tick(FPS)
+        dt = clock.tick(FPS) / 1000.0
 
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
@@ -362,6 +365,15 @@ def game_loop():
 
         keys = pygame.key.get_pressed()
         player.move(keys, solids)
+
+        for p in particles[:]:
+            p["vy"] -= buoyancy * dt
+            p["vx"] *= math.exp(-drag * dt)
+            p["x"] += p["vx"] * dt
+            p["y"] += p["vy"] * dt
+            p["life"] -= dt
+            if p["life"] <= 0:
+                particles.remove(p)
 
         camx = int(round(player.x - WIDTH // 2))
         camy = int(round(player.y - HEIGHT // 2))
