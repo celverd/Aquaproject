@@ -12,7 +12,7 @@ WIDTH, HEIGHT = 1280, 720
 WIN = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Aqua Drift")
 
-DARK_BLUE = (10, 20, 40)
+BACKGROUND_COLOR = (10, 20, 40)
 WHITE = (255, 255, 255)
 
 TILE_SIZE = 32
@@ -368,7 +368,7 @@ def game_loop():
         camx = int(round(player.x - WIDTH // 2))
         camy = int(round(player.y - HEIGHT // 2))
 
-        WIN.fill(DARK_BLUE)
+        WIN.fill(BACKGROUND_COLOR)
         draw_level(WIN, level_map, camx, camy)
         player.draw(WIN, camx, camy)
         player.draw_debug(WIN, debug_font)
