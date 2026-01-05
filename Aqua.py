@@ -106,12 +106,12 @@ class Player:
         # Dash
         self.is_dashing = False
         self.dash_speed = 25.0
-        self.dash_time = 12
-        self.dash_timer = 0
+        self.dash_time = 12 / FPS
+        self.dash_timer = 0.0
         self.dash_dx = 0.0
         self.dash_dy = 0.0
-        self.dash_cd = 0
-        self.dash_cd_max = 18
+        self.dash_cd = 0.0
+        self.dash_cd_max = 18 / FPS
 
         # Facing + "moving" state
         self.facing = 1
@@ -190,10 +190,10 @@ class Player:
         self.y = float(new_y)
         self.rect.topleft = (int(self.x), int(self.y))
 
-    def move(self, keys, solids):
+    def move(self, keys, solids, dt):
         # Dash cooldown
         if self.dash_cd > 0:
-            self.dash_cd -= 1
+            self.dash_cd -= dt
 
         # If stuck, SHIFT to drop OR SPACE to dash breaks stick
         if self.is_stuck and (keys[self.release_key] or keys[pygame.K_SPACE]):
@@ -276,11 +276,18 @@ class Player:
             self.is_stuck = False
             self.stick_side = 0
 
+        # Cancel dash if shooting
+        if self.is_dashing and keys[pygame.K_1]:
+            self.is_dashing = False
+            self.dash_timer = 0.0
+            self.dash_dx = 0.0
+            self.dash_dy = 0.0
+
         # Apply movement values
         if self.is_dashing:
             move_x = self.dash_dx
             move_y = self.dash_dy
-            self.dash_timer -= 1
+            self.dash_timer -= dt
             if self.dash_timer <= 0:
                 self.is_dashing = False
                 self.dash_dx = 0.0
@@ -353,7 +360,7 @@ def game_loop():
     debug_font = pygame.font.Font(None, 20)
 
     while True:
-        clock.tick(FPS)
+        dt = clock.tick(FPS) / 1000.0
 
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
@@ -363,7 +370,7 @@ def game_loop():
                 player.debug_mode = not player.debug_mode
 
         keys = pygame.key.get_pressed()
-        player.move(keys, solids)
+        player.move(keys, solids, dt)
 
         camx = int(round(player.x - WIDTH // 2))
         camy = int(round(player.y - HEIGHT // 2))
