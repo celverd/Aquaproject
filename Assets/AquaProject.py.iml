@@ -1,0 +1,15 @@
+C:\Users\celve.ELVERD\PycharmProjects\Guessing_game.py\.venv\Scripts\python.exe C:\Users\celve.ELVERD\PycharmProjects\Guessing_game.py\Aqua.py 
+pygame 2.6.1 (SDL 2.28.4, Python 3.13.9)
+Hello from the pygame community. https://www.pygame.org/contribute.html
+Traceback (most recent call last):
+  File "C:\Users\celve.ELVERD\PycharmProjects\Guessing_game.py\Aqua.py", line 286, in <module>
+    game_loop()
+    ~~~~~~~~~^^
+  File "C:\Users\celve.ELVERD\PycharmProjects\Guessing_game.py\Aqua.py", line 248, in game_loop
+    level_map = load_level("Levels/LVL1.txt")
+  File "C:\Users\celve.ELVERD\PycharmProjects\Guessing_game.py\Aqua.py", line 25, in load_level
+    with open(path, "r") as f:
+         ~~~~^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'Levels/LVL1.txt'
+
+Process finished with exit code 1
