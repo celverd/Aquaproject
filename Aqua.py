@@ -3,6 +3,8 @@ import sys
 import os
 import math
 
+from player_movement import MovementInput, PlayerMovement
+
 pygame.init()
 
 # =========================
@@ -81,44 +83,24 @@ class Player:
         self.w = 64
         self.h = 64
 
-        # Movement (px/sec, px/sec^2)
-        self.accel = 900.0
-        self.drag = 2.6
-        self.max_speed = 220.0
-        self.sink_accel = 120.0
-        self.vx = 0.0
-        self.vy = 0.0
+        # Movement (separated from rendering)
+        self.movement = PlayerMovement()
         self.swim_deadzone = 0.1
 
-        # Contacts
-        self.on_ground = False
-        self.wall_left = False
-        self.wall_right = False
-
-        # Wall crouch / kick
-        self.is_wall_crouch = False
-        self.stick_side = 0          # -1 left, +1 right
-        self.stick_slide = 24.0
-        self.wall_kick_timer = 0.0
-        self.wall_kick_duration = 0.18
-        self.wall_kick_lockout = 0.0
-        self.wall_kick_lockout_max = 0.25
-        self.wall_kick_speed_x = 260.0
-        self.wall_kick_speed_y = 180.0
-
-        # Dash
-        self.is_dashing = False
-        self.dash_speed = 420.0
-        self.dash_time = 0.18
-        self.dash_timer = 0.0
-        self.dash_dx = 0.0
-        self.dash_dy = 0.0
-        self.dash_cd = 0.0
-        self.dash_cd_max = 0.3
-
         # Facing + "moving" state
-        self.facing = 1
         self.is_moving = False
+
+        # Input mapping lives outside movement logic so keys are replaceable.
+        self.keymap = {
+            "left": [pygame.K_a, pygame.K_LEFT],
+            "right": [pygame.K_d, pygame.K_RIGHT],
+            "up": [pygame.K_w, pygame.K_UP],
+            "down": [pygame.K_s, pygame.K_DOWN],
+            "jump": [pygame.K_SPACE],
+            "dash": [pygame.K_LSHIFT, pygame.K_RSHIFT],
+        }
+        self._prev_jump = False
+        self._prev_dash = False
 
         # Visual: feet + breathing (visual-only, pixel-snapped)
         self.feet_offset = 6  # tweak 4..10 until feet touch
@@ -164,10 +146,10 @@ class Player:
         # Debug
         self.debug_mode = False
 
-    def _resolve_axis(self, solids, move_x, move_y):
+    def _resolve_axis(self, solids, movement, move_x, move_y):
         # Reset contacts every frame
-        self.wall_left = False
-        self.wall_right = False
+        movement.wall_left = False
+        movement.wall_right = False
 
         # ---- X axis ----
         new_x = self.x + move_x
@@ -177,17 +159,17 @@ class Player:
                 if rx.colliderect(tile):
                     if move_x > 0:
                         rx.right = tile.left
-                        self.wall_right = True
+                        movement.wall_right = True
                     else:
                         rx.left = tile.right
-                        self.wall_left = True
+                        movement.wall_left = True
             new_x = rx.x
         else:
             for tile in solids:
                 if rx.right == tile.left and rx.bottom > tile.top and rx.top < tile.bottom:
-                    self.wall_right = True
+                    movement.wall_right = True
                 if rx.left == tile.right and rx.bottom > tile.top and rx.top < tile.bottom:
-                    self.wall_left = True
+                    movement.wall_left = True
 
         # ---- Y axis ----
         new_y = self.y + move_y
@@ -209,140 +191,54 @@ class Player:
                 if ry.bottom == tile.top and ry.right > tile.left and ry.left < tile.right:
                     hit_floor = True
 
-        self.on_ground = hit_floor
+        movement.on_ground = hit_floor
         if hit_floor:
-            self.vy = 0.0
+            movement.vy = 0.0
 
         self.x = float(new_x)
         self.y = float(new_y)
 
-    def move(self, keys, solids, dt):
-        # Timers
-        if self.dash_cd > 0:
-            self.dash_cd = max(0.0, self.dash_cd - dt)
-        if self.wall_kick_timer > 0:
-            self.wall_kick_timer = max(0.0, self.wall_kick_timer - dt)
-        if self.wall_kick_lockout > 0:
-            self.wall_kick_lockout = max(0.0, self.wall_kick_lockout - dt)
+    def _input_pressed(self, keys, action):
+        return any(keys[key] for key in self.keymap[action])
 
-        # Input flags (for animation + breathing)
-        moving_keys = (
-            keys[pygame.K_a] or keys[pygame.K_LEFT] or
-            keys[pygame.K_d] or keys[pygame.K_RIGHT] or
-            keys[pygame.K_w] or keys[pygame.K_UP] or
-            keys[pygame.K_s] or keys[pygame.K_DOWN]
-        )
-        self.is_moving = bool(moving_keys) and (not self.is_wall_crouch)
-
+    def _read_inputs(self, keys):
         input_x = 0.0
         input_y = 0.0
-        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+        if self._input_pressed(keys, "left"):
             input_x -= 1.0
-        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+        if self._input_pressed(keys, "right"):
             input_x += 1.0
-        if keys[pygame.K_w] or keys[pygame.K_UP]:
+        if self._input_pressed(keys, "up"):
             input_y -= 1.0
-        if keys[pygame.K_s] or keys[pygame.K_DOWN]:
+        if self._input_pressed(keys, "down"):
             input_y += 1.0
 
-        if abs(input_x) > self.swim_deadzone:
-            self.facing = 1 if input_x > 0 else -1
+        jump_now = self._input_pressed(keys, "jump")
+        dash_now = self._input_pressed(keys, "dash")
 
-        # Start dash
-        if keys[pygame.K_SPACE] and (not self.is_dashing) and self.dash_cd <= 0 and (not self.is_wall_crouch):
-            self.is_dashing = True
-            self.dash_timer = self.dash_time
-            self.dash_cd = self.dash_cd_max
+        inputs = MovementInput(
+            x=input_x,
+            y=input_y,
+            jump_pressed=jump_now and (not self._prev_jump),
+            jump_held=jump_now,
+            jump_released=(not jump_now) and self._prev_jump,
+            dash_pressed=dash_now and (not self._prev_dash),
+        )
+        self._prev_jump = jump_now
+        self._prev_dash = dash_now
+        return inputs
 
-            dash_dx = 0
-            dash_dy = 0
-            if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-                dash_dx = -1
-            if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-                dash_dx = 1
-            if keys[pygame.K_w] or keys[pygame.K_UP]:
-                dash_dy = -1
-            if keys[pygame.K_s] or keys[pygame.K_DOWN]:
-                dash_dy = 1
+    def move(self, keys, solids, dt):
+        inputs = self._read_inputs(keys)
 
-            if dash_dx != 0 and dash_dy != 0:
-                dash_dx *= 0.707
-                dash_dy *= 0.707
+        # Input flags (for animation + breathing)
+        moving_keys = abs(inputs.x) > self.swim_deadzone or abs(inputs.y) > self.swim_deadzone
+        self.is_moving = bool(moving_keys) and (not self.movement.is_wall_crouch)
 
-            # If still no input, dash facing direction
-            if dash_dx == 0 and dash_dy == 0:
-                dash_dx = self.facing
-
-            self.dash_dx = dash_dx * self.dash_speed
-            self.dash_dy = dash_dy * self.dash_speed
-            self.vx = self.dash_dx
-            self.vy = self.dash_dy
-
-        # Wall kick (SPACE while clinging)
-        if self.is_wall_crouch and keys[pygame.K_SPACE] and self.wall_kick_lockout <= 0:
-            self.is_wall_crouch = False
-            self.wall_kick_timer = self.wall_kick_duration
-            self.wall_kick_lockout = self.wall_kick_lockout_max
-            kick_dir = -self.stick_side if self.stick_side != 0 else -self.facing
-            self.vx = kick_dir * self.wall_kick_speed_x
-            self.vy = -self.wall_kick_speed_y
-            self.stick_side = 0
-
-        # Movement update
-        if self.is_dashing:
-            move_x = self.dash_dx * dt
-            move_y = self.dash_dy * dt
-            self.dash_timer -= dt
-            if self.dash_timer <= 0:
-                self.is_dashing = False
-        elif self.is_wall_crouch:
-            move_x = 0.0
-            self.vx = 0.0
-            if input_y < 0:
-                self.vy = -self.stick_slide
-            elif input_y > 0:
-                self.vy = self.stick_slide
-            else:
-                self.vy = self.stick_slide * 0.4
-            move_y = self.vy * dt
-        else:
-            self.vx += input_x * self.accel * dt
-            self.vy += input_y * self.accel * dt
-            if not self.on_ground:
-                self.vy += self.sink_accel * dt
-            else:
-                self.vy = min(self.vy, 0.0)
-
-            self.vx -= self.drag * self.vx * dt
-            self.vy -= self.drag * self.vy * dt
-
-            speed = math.hypot(self.vx, self.vy)
-            if speed > self.max_speed:
-                scale = self.max_speed / speed
-                self.vx *= scale
-                self.vy *= scale
-
-            move_x = self.vx * dt
-            move_y = self.vy * dt
-
-        # Collide (this prevents phasing through walls)
-        self._resolve_axis(solids, move_x, move_y)
-
-        # Auto-stick to walls if airborne + touching wall
-        if (not self.on_ground) and (not self.is_dashing) and (not self.is_wall_crouch) and self.wall_kick_lockout <= 0:
-            if self.wall_left or self.wall_right:
-                self.is_wall_crouch = True
-                self.stick_side = -1 if self.wall_left else 1
-                self.facing = -self.stick_side
-                self.vx = 0.0
-                self.vy = 0.0
-
-        if self.is_wall_crouch and (not self.wall_left) and (not self.wall_right):
-            self.is_wall_crouch = False
-            self.stick_side = 0
+        self.movement.update(inputs, dt, solids, self._resolve_axis)
 
         # Breathing (visual only, stable)
-        if (not self.is_moving) and (not self.is_dashing) and (not self.is_wall_crouch):
+        if (not self.is_moving) and (not self.movement.is_dashing) and (not self.movement.is_wall_crouch):
             self.bob_t += 0.05
             self.bob = int(round(math.sin(self.bob_t) * 1))  # 1px
         else:
@@ -353,43 +249,43 @@ class Player:
         x = int(self.x - camx)
         y = int(self.y - camy + self.bob + self.feet_offset)
 
-        if self.is_dashing:
-            img = self.img_dash_r if self.facing == 1 else self.img_dash_l
+        if self.movement.is_dashing:
+            img = self.img_dash_r if self.movement.facing == 1 else self.img_dash_l
             ox = (img.get_width() - self.w) // 2
             oy = (img.get_height() - self.h) // 2
             screen.blit(img, (x - ox, y - oy))
-        elif self.wall_kick_timer > 0:
-            img = self.img_swim_r if self.facing == 1 else self.img_swim_l
+        elif self.movement.wall_kick_timer > 0:
+            img = self.img_swim_r if self.movement.facing == 1 else self.img_swim_l
             screen.blit(img, (x, y))
-        elif self.is_wall_crouch:
-            img = self.img_crouch_r if self.facing == 1 else self.img_crouch_l
+        elif self.movement.is_wall_crouch:
+            img = self.img_crouch_r if self.movement.facing == 1 else self.img_crouch_l
             screen.blit(img, (x, y))
-        elif self.on_ground:
-            img = self.img_idle_r if self.facing == 1 else self.img_idle_l
+        elif self.movement.on_ground:
+            img = self.img_idle_r if self.movement.facing == 1 else self.img_idle_l
             screen.blit(img, (x, y))
         else:
-            speed = math.hypot(self.vx, self.vy)
+            speed = math.hypot(self.movement.vx, self.movement.vy)
             if speed > 40.0:
-                img = self.img_swim_r if self.facing == 1 else self.img_swim_l
+                img = self.img_swim_r if self.movement.facing == 1 else self.img_swim_l
             else:
-                img = self.img_idle_r if self.facing == 1 else self.img_idle_l
+                img = self.img_idle_r if self.movement.facing == 1 else self.img_idle_l
             screen.blit(img, (x, y))
 
     def draw_debug(self, screen, font):
         if not self.debug_mode:
             return
         state = "SWIM"
-        if self.is_dashing:
+        if self.movement.is_dashing:
             state = "DASH"
-        elif self.wall_kick_timer > 0:
+        elif self.movement.wall_kick_timer > 0:
             state = "WALL_KICK"
-        elif self.is_wall_crouch:
+        elif self.movement.is_wall_crouch:
             state = "WALL_CROUCH"
         lines = [
             f"state={state}",
-            f"pos=({self.x:.1f},{self.y:.1f}) vx={self.vx:.2f} vy={self.vy:.2f}",
-            f"cling_side={self.stick_side}",
-            f"kick_timer={self.wall_kick_timer:.2f} lockout={self.wall_kick_lockout:.2f}",
+            f"pos=({self.x:.1f},{self.y:.1f}) vx={self.movement.vx:.2f} vy={self.movement.vy:.2f}",
+            f"cling_side={self.movement.stick_side}",
+            f"kick_timer={self.movement.wall_kick_timer:.2f} lockout={self.movement.wall_kick_lockout:.2f}",
         ]
         bg = pygame.Surface((420, len(lines) * 20 + 10), pygame.SRCALPHA)
         bg.fill((0, 0, 0, 180))
