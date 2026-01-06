@@ -3,6 +3,11 @@ import sys
 import os
 import math
 
+from player_animator import (
+    HURT_DURATION,
+    SHOOT_DURATION,
+    build_default_player_animator,
+)
 pygame.init()
 
 # =========================
@@ -119,50 +124,29 @@ class Player:
         # Facing + "moving" state
         self.facing = 1
         self.is_moving = False
+        self.shoot_timer = 0.0
+        self.hurt_timer = 0.0
 
         # Visual: feet + breathing (visual-only, pixel-snapped)
         self.feet_offset = 6  # tweak 4..10 until feet touch
         self.bob_t = 0.0
         self.bob = 0
 
-        # Sprites
+        # Animator (loads all frames once)
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        assets_dir = os.path.join(script_dir, "Assets")
-        try:
-            idle_path = os.path.join(assets_dir, "scuba.png")
-            dash_path = os.path.join(assets_dir, "Dash.png")
-            swim_path = os.path.join(assets_dir, "swim2.png")
-            crouch_path = os.path.join(assets_dir, "wallcrouch.png")
-            raw_idle = pygame.image.load(idle_path).convert_alpha()
-            raw_dash = pygame.image.load(dash_path).convert_alpha()
-            raw_swim = pygame.image.load(swim_path).convert_alpha()
-            raw_crouch = pygame.image.load(crouch_path).convert_alpha()
-
-            self.img_idle_r = pygame.transform.scale(raw_idle, (64, 64))
-            self.img_idle_l = pygame.transform.flip(self.img_idle_r, True, False)
-
-            self.img_dash_r = pygame.transform.scale(raw_dash, (96, 96))
-            self.img_dash_l = pygame.transform.flip(self.img_dash_r, True, False)
-
-            self.img_swim_r = pygame.transform.scale(raw_swim, (64, 64))
-            self.img_swim_l = pygame.transform.flip(self.img_swim_r, True, False)
-
-            self.img_crouch_r = pygame.transform.scale(raw_crouch, (64, 64))
-            self.img_crouch_l = pygame.transform.flip(self.img_crouch_r, True, False)
-        except Exception as e:
-            print("Sprite load error:", e)
-            self.img_idle_r = pygame.Surface((64, 64), pygame.SRCALPHA)
-            self.img_idle_r.fill((255, 0, 0))
-            self.img_idle_l = self.img_idle_r.copy()
-            self.img_dash_r = pygame.transform.scale(self.img_idle_r, (96, 96))
-            self.img_dash_l = pygame.transform.flip(self.img_dash_r, True, False)
-            self.img_swim_r = self.img_idle_r.copy()
-            self.img_swim_l = self.img_idle_l.copy()
-            self.img_crouch_r = self.img_idle_r.copy()
-            self.img_crouch_l = self.img_idle_l.copy()
+        self.animator = build_default_player_animator(script_dir)
+        self.anim_state = "idle"
+        self.anim_frame = None
+        self.anim_offset = (0, 0)
 
         # Debug
         self.debug_mode = False
+
+    def trigger_shoot(self):
+        self.shoot_timer = SHOOT_DURATION
+
+    def trigger_hurt(self):
+        self.hurt_timer = HURT_DURATION
 
     def _resolve_axis(self, solids, move_x, move_y):
         # Reset contacts every frame
@@ -224,6 +208,10 @@ class Player:
             self.wall_kick_timer = max(0.0, self.wall_kick_timer - dt)
         if self.wall_kick_lockout > 0:
             self.wall_kick_lockout = max(0.0, self.wall_kick_lockout - dt)
+        if self.shoot_timer > 0:
+            self.shoot_timer = max(0.0, self.shoot_timer - dt)
+        if self.hurt_timer > 0:
+            self.hurt_timer = max(0.0, self.hurt_timer - dt)
 
         # Input flags (for animation + breathing)
         moving_keys = (
@@ -349,44 +337,30 @@ class Player:
             self.bob_t = 0.0
             self.bob = 0
 
+        # Feed animator a read-only snapshot so gameplay stays separate.
+        snapshot = {
+            "vx": self.vx,
+            "vy": self.vy,
+            "on_ground": self.on_ground,
+            "is_shooting": self.shoot_timer > 0.0,
+            "is_dashing": self.is_dashing,
+            "is_hurt": self.hurt_timer > 0.0,
+            "facing_dir": self.facing,
+        }
+        self.anim_frame, self.anim_offset, self.anim_state = self.animator.update(dt, snapshot)
+
     def draw(self, screen, camx, camy):
         x = int(self.x - camx)
         y = int(self.y - camy + self.bob + self.feet_offset)
 
-        if self.is_dashing:
-            img = self.img_dash_r if self.facing == 1 else self.img_dash_l
-            ox = (img.get_width() - self.w) // 2
-            oy = (img.get_height() - self.h) // 2
-            screen.blit(img, (x - ox, y - oy))
-        elif self.wall_kick_timer > 0:
-            img = self.img_swim_r if self.facing == 1 else self.img_swim_l
-            screen.blit(img, (x, y))
-        elif self.is_wall_crouch:
-            img = self.img_crouch_r if self.facing == 1 else self.img_crouch_l
-            screen.blit(img, (x, y))
-        elif self.on_ground:
-            img = self.img_idle_r if self.facing == 1 else self.img_idle_l
-            screen.blit(img, (x, y))
-        else:
-            speed = math.hypot(self.vx, self.vy)
-            if speed > 40.0:
-                img = self.img_swim_r if self.facing == 1 else self.img_swim_l
-            else:
-                img = self.img_idle_r if self.facing == 1 else self.img_idle_l
-            screen.blit(img, (x, y))
+        if self.anim_frame is not None:
+            screen.blit(self.anim_frame, (x - self.anim_offset[0], y - self.anim_offset[1]))
 
     def draw_debug(self, screen, font):
         if not self.debug_mode:
             return
-        state = "SWIM"
-        if self.is_dashing:
-            state = "DASH"
-        elif self.wall_kick_timer > 0:
-            state = "WALL_KICK"
-        elif self.is_wall_crouch:
-            state = "WALL_CROUCH"
         lines = [
-            f"state={state}",
+            f"state={self.anim_state}",
             f"pos=({self.x:.1f},{self.y:.1f}) vx={self.vx:.2f} vy={self.vy:.2f}",
             f"cling_side={self.stick_side}",
             f"kick_timer={self.wall_kick_timer:.2f} lockout={self.wall_kick_lockout:.2f}",
@@ -422,6 +396,10 @@ def game_loop():
                 sys.exit()
             if e.type == pygame.KEYDOWN and e.key == pygame.K_F3:
                 player.debug_mode = not player.debug_mode
+            if e.type == pygame.KEYDOWN and e.key == pygame.K_LCTRL:
+                player.trigger_shoot()
+            if e.type == pygame.KEYDOWN and e.key == pygame.K_h:
+                player.trigger_hurt()
 
         keys = pygame.key.get_pressed()
         player.move(keys, solids, dt)
