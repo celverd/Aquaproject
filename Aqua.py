@@ -81,36 +81,40 @@ class Player:
         self.w = 64
         self.h = 64
 
-        # Movement
-        self.speed_x = 6.0
-
-        # Underwater "gravity" (sink)
-        self.sink_accel = 0.20
-        self.max_fall = 3.0
-        self.swim_up = 2.6
-        self.swim_down = 2.6
+        # Movement (px/sec, px/sec^2)
+        self.accel = 900.0
+        self.drag = 2.6
+        self.max_speed = 220.0
+        self.sink_accel = 120.0
+        self.vx = 0.0
         self.vy = 0.0
+        self.swim_deadzone = 0.1
 
         # Contacts
         self.on_ground = False
         self.wall_left = False
         self.wall_right = False
 
-        # Auto wall stick
-        self.is_stuck = False
+        # Wall crouch / kick
+        self.is_wall_crouch = False
         self.stick_side = 0          # -1 left, +1 right
-        self.stick_slide = 0.6       # how fast you slide down while stuck
-        self.release_key = pygame.K_LSHIFT
+        self.stick_slide = 24.0
+        self.wall_kick_timer = 0.0
+        self.wall_kick_duration = 0.18
+        self.wall_kick_lockout = 0.0
+        self.wall_kick_lockout_max = 0.25
+        self.wall_kick_speed_x = 260.0
+        self.wall_kick_speed_y = 180.0
 
         # Dash
         self.is_dashing = False
-        self.dash_speed = 25.0
-        self.dash_time = 12
-        self.dash_timer = 0
+        self.dash_speed = 420.0
+        self.dash_time = 0.18
+        self.dash_timer = 0.0
         self.dash_dx = 0.0
         self.dash_dy = 0.0
-        self.dash_cd = 0
-        self.dash_cd_max = 18
+        self.dash_cd = 0.0
+        self.dash_cd_max = 0.3
 
         # Facing + "moving" state
         self.facing = 1
@@ -127,14 +131,24 @@ class Player:
         try:
             idle_path = os.path.join(assets_dir, "scuba.png")
             dash_path = os.path.join(assets_dir, "Dash.png")
+            swim_path = os.path.join(assets_dir, "swim2.png")
+            crouch_path = os.path.join(assets_dir, "wallcrouch.png")
             raw_idle = pygame.image.load(idle_path).convert_alpha()
             raw_dash = pygame.image.load(dash_path).convert_alpha()
+            raw_swim = pygame.image.load(swim_path).convert_alpha()
+            raw_crouch = pygame.image.load(crouch_path).convert_alpha()
 
             self.img_idle_r = pygame.transform.scale(raw_idle, (64, 64))
             self.img_idle_l = pygame.transform.flip(self.img_idle_r, True, False)
 
             self.img_dash_r = pygame.transform.scale(raw_dash, (96, 96))
             self.img_dash_l = pygame.transform.flip(self.img_dash_r, True, False)
+
+            self.img_swim_r = pygame.transform.scale(raw_swim, (64, 64))
+            self.img_swim_l = pygame.transform.flip(self.img_swim_r, True, False)
+
+            self.img_crouch_r = pygame.transform.scale(raw_crouch, (64, 64))
+            self.img_crouch_l = pygame.transform.flip(self.img_crouch_r, True, False)
         except Exception as e:
             print("Sprite load error:", e)
             self.img_idle_r = pygame.Surface((64, 64), pygame.SRCALPHA)
@@ -142,6 +156,10 @@ class Player:
             self.img_idle_l = self.img_idle_r.copy()
             self.img_dash_r = pygame.transform.scale(self.img_idle_r, (96, 96))
             self.img_dash_l = pygame.transform.flip(self.img_dash_r, True, False)
+            self.img_swim_r = self.img_idle_r.copy()
+            self.img_swim_l = self.img_idle_l.copy()
+            self.img_crouch_r = self.img_idle_r.copy()
+            self.img_crouch_l = self.img_idle_l.copy()
 
         # Debug
         self.debug_mode = False
@@ -164,6 +182,12 @@ class Player:
                         rx.left = tile.right
                         self.wall_left = True
             new_x = rx.x
+        else:
+            for tile in solids:
+                if rx.right == tile.left and rx.bottom > tile.top and rx.top < tile.bottom:
+                    self.wall_right = True
+                if rx.left == tile.right and rx.bottom > tile.top and rx.top < tile.bottom:
+                    self.wall_left = True
 
         # ---- Y axis ----
         new_y = self.y + move_y
@@ -180,6 +204,10 @@ class Player:
                         ry.top = tile.bottom
                     move_y = 0.0
             new_y = ry.y
+        else:
+            for tile in solids:
+                if ry.bottom == tile.top and ry.right > tile.left and ry.left < tile.right:
+                    hit_floor = True
 
         self.on_ground = hit_floor
         if hit_floor:
@@ -188,15 +216,14 @@ class Player:
         self.x = float(new_x)
         self.y = float(new_y)
 
-    def move(self, keys, solids):
-        # Dash cooldown
+    def move(self, keys, solids, dt):
+        # Timers
         if self.dash_cd > 0:
-            self.dash_cd -= 1
-
-        # If stuck, SHIFT to drop OR SPACE to dash breaks stick
-        if self.is_stuck and (keys[self.release_key] or keys[pygame.K_SPACE]):
-            self.is_stuck = False
-            self.stick_side = 0
+            self.dash_cd = max(0.0, self.dash_cd - dt)
+        if self.wall_kick_timer > 0:
+            self.wall_kick_timer = max(0.0, self.wall_kick_timer - dt)
+        if self.wall_kick_lockout > 0:
+            self.wall_kick_lockout = max(0.0, self.wall_kick_lockout - dt)
 
         # Input flags (for animation + breathing)
         moving_keys = (
@@ -205,41 +232,24 @@ class Player:
             keys[pygame.K_w] or keys[pygame.K_UP] or
             keys[pygame.K_s] or keys[pygame.K_DOWN]
         )
-        self.is_moving = bool(moving_keys) and (not self.is_stuck)
+        self.is_moving = bool(moving_keys) and (not self.is_wall_crouch)
 
-        # Horizontal input (disabled while stuck or dashing)
-        dx = 0.0
-        if not self.is_stuck and not self.is_dashing:
-            if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-                dx -= self.speed_x
-                self.facing = -1
-            if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-                dx += self.speed_x
-                self.facing = 1
+        input_x = 0.0
+        input_y = 0.0
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            input_x -= 1.0
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            input_x += 1.0
+        if keys[pygame.K_w] or keys[pygame.K_UP]:
+            input_y -= 1.0
+        if keys[pygame.K_s] or keys[pygame.K_DOWN]:
+            input_y += 1.0
 
-        # Underwater vertical control (disabled while dashing; overridden while stuck)
-        if not self.is_dashing and not self.is_stuck:
-            up = keys[pygame.K_w] or keys[pygame.K_UP]
-            down = keys[pygame.K_s] or keys[pygame.K_DOWN]
-            if up:
-                self.vy = -self.swim_up
-            elif down:
-                self.vy = self.swim_down
-            else:
-                if not self.on_ground:
-                    self.vy += self.sink_accel
-                    if self.vy > self.max_fall:
-                        self.vy = self.max_fall
-                else:
-                    self.vy = 0.0
-
-        # Stick behavior
-        if self.is_stuck and not self.is_dashing:
-            dx = 0.0
-            self.vy = self.stick_slide
+        if abs(input_x) > self.swim_deadzone:
+            self.facing = 1 if input_x > 0 else -1
 
         # Start dash
-        if keys[pygame.K_SPACE] and (not self.is_dashing) and self.dash_cd <= 0:
+        if keys[pygame.K_SPACE] and (not self.is_dashing) and self.dash_cd <= 0 and (not self.is_wall_crouch):
             self.is_dashing = True
             self.dash_timer = self.dash_time
             self.dash_cd = self.dash_cd_max
@@ -259,46 +269,80 @@ class Player:
                 dash_dx *= 0.707
                 dash_dy *= 0.707
 
-            # If no direction and stuck, dash away from wall
-            if dash_dx == 0 and dash_dy == 0 and self.stick_side != 0:
-                dash_dx = -self.stick_side
-
             # If still no input, dash facing direction
             if dash_dx == 0 and dash_dy == 0:
                 dash_dx = self.facing
 
             self.dash_dx = dash_dx * self.dash_speed
             self.dash_dy = dash_dy * self.dash_speed
+            self.vx = self.dash_dx
+            self.vy = self.dash_dy
 
-            # Dash breaks stick
-            self.is_stuck = False
+        # Wall kick (SPACE while clinging)
+        if self.is_wall_crouch and keys[pygame.K_SPACE] and self.wall_kick_lockout <= 0:
+            self.is_wall_crouch = False
+            self.wall_kick_timer = self.wall_kick_duration
+            self.wall_kick_lockout = self.wall_kick_lockout_max
+            kick_dir = -self.stick_side if self.stick_side != 0 else -self.facing
+            self.vx = kick_dir * self.wall_kick_speed_x
+            self.vy = -self.wall_kick_speed_y
             self.stick_side = 0
 
-        # Apply movement values
+        # Movement update
         if self.is_dashing:
-            move_x = self.dash_dx
-            move_y = self.dash_dy
-            self.dash_timer -= 1
+            move_x = self.dash_dx * dt
+            move_y = self.dash_dy * dt
+            self.dash_timer -= dt
             if self.dash_timer <= 0:
                 self.is_dashing = False
-                self.dash_dx = 0.0
-                self.dash_dy = 0.0
+        elif self.is_wall_crouch:
+            move_x = 0.0
+            self.vx = 0.0
+            if input_y < 0:
+                self.vy = -self.stick_slide
+            elif input_y > 0:
+                self.vy = self.stick_slide
+            else:
+                self.vy = self.stick_slide * 0.4
+            move_y = self.vy * dt
         else:
-            move_x = dx
-            move_y = self.vy
+            self.vx += input_x * self.accel * dt
+            self.vy += input_y * self.accel * dt
+            if not self.on_ground:
+                self.vy += self.sink_accel * dt
+            else:
+                self.vy = min(self.vy, 0.0)
+
+            self.vx -= self.drag * self.vx * dt
+            self.vy -= self.drag * self.vy * dt
+
+            speed = math.hypot(self.vx, self.vy)
+            if speed > self.max_speed:
+                scale = self.max_speed / speed
+                self.vx *= scale
+                self.vy *= scale
+
+            move_x = self.vx * dt
+            move_y = self.vy * dt
 
         # Collide (this prevents phasing through walls)
         self._resolve_axis(solids, move_x, move_y)
 
         # Auto-stick to walls if airborne + touching wall
-        if (not self.on_ground) and (not self.is_dashing) and (not self.is_stuck):
+        if (not self.on_ground) and (not self.is_dashing) and (not self.is_wall_crouch) and self.wall_kick_lockout <= 0:
             if self.wall_left or self.wall_right:
-                self.is_stuck = True
+                self.is_wall_crouch = True
                 self.stick_side = -1 if self.wall_left else 1
+                self.facing = -self.stick_side
+                self.vx = 0.0
                 self.vy = 0.0
 
+        if self.is_wall_crouch and (not self.wall_left) and (not self.wall_right):
+            self.is_wall_crouch = False
+            self.stick_side = 0
+
         # Breathing (visual only, stable)
-        if (not self.is_moving) and (not self.is_dashing) and (not self.is_stuck):
+        if (not self.is_moving) and (not self.is_dashing) and (not self.is_wall_crouch):
             self.bob_t += 0.05
             self.bob = int(round(math.sin(self.bob_t) * 1))  # 1px
         else:
@@ -309,27 +353,43 @@ class Player:
         x = int(self.x - camx)
         y = int(self.y - camy + self.bob + self.feet_offset)
 
-        # Use dash sprite for swimming OR dashing
-        use_dash_sprite = self.is_dashing or self.is_moving
-
-        if use_dash_sprite:
+        if self.is_dashing:
             img = self.img_dash_r if self.facing == 1 else self.img_dash_l
             ox = (img.get_width() - self.w) // 2
             oy = (img.get_height() - self.h) // 2
             screen.blit(img, (x - ox, y - oy))
-        else:
+        elif self.wall_kick_timer > 0:
+            img = self.img_swim_r if self.facing == 1 else self.img_swim_l
+            screen.blit(img, (x, y))
+        elif self.is_wall_crouch:
+            img = self.img_crouch_r if self.facing == 1 else self.img_crouch_l
+            screen.blit(img, (x, y))
+        elif self.on_ground:
             img = self.img_idle_r if self.facing == 1 else self.img_idle_l
+            screen.blit(img, (x, y))
+        else:
+            speed = math.hypot(self.vx, self.vy)
+            if speed > 40.0:
+                img = self.img_swim_r if self.facing == 1 else self.img_swim_l
+            else:
+                img = self.img_idle_r if self.facing == 1 else self.img_idle_l
             screen.blit(img, (x, y))
 
     def draw_debug(self, screen, font):
         if not self.debug_mode:
             return
+        state = "SWIM"
+        if self.is_dashing:
+            state = "DASH"
+        elif self.wall_kick_timer > 0:
+            state = "WALL_KICK"
+        elif self.is_wall_crouch:
+            state = "WALL_CROUCH"
         lines = [
-            f"pos=({self.x:.1f},{self.y:.1f}) vy={self.vy:.2f}",
-            f"ground={self.on_ground} stuck={self.is_stuck} side={self.stick_side}",
-            f"wall L={self.wall_left} R={self.wall_right}",
-            f"dashing={self.is_dashing} cd={self.dash_cd}",
-            f"moving={self.is_moving}",
+            f"state={state}",
+            f"pos=({self.x:.1f},{self.y:.1f}) vx={self.vx:.2f} vy={self.vy:.2f}",
+            f"cling_side={self.stick_side}",
+            f"kick_timer={self.wall_kick_timer:.2f} lockout={self.wall_kick_lockout:.2f}",
         ]
         bg = pygame.Surface((420, len(lines) * 20 + 10), pygame.SRCALPHA)
         bg.fill((0, 0, 0, 180))
@@ -360,11 +420,11 @@ def game_loop():
             if e.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
-            if e.type == pygame.KEYDOWN and e.key == pygame.K_F1:
+            if e.type == pygame.KEYDOWN and e.key == pygame.K_F3:
                 player.debug_mode = not player.debug_mode
 
         keys = pygame.key.get_pressed()
-        player.move(keys, solids)
+        player.move(keys, solids, dt)
 
         for p in particles[:]:
             p["vy"] -= buoyancy * dt
